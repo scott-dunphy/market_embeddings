@@ -24,14 +24,23 @@ def load_msa_data_from_github(github_url):
         matches = re.findall(pattern, content)
         
         msa_list = []
+        seen_city_codes = set()  # Track unique combinations to prevent duplicates
+        
         for state, city, code in matches:
             city = city.strip()
-            msa_list.append({
-                'state': state,
-                'city': city,
-                'code': code,
-                'full_name': f"{state} - {city} ({code})"
-            })
+            # Create a unique identifier for this city-code combination
+            city_code_key = f"{city.lower()}_{code}"
+            
+            # Only add if we haven't seen this exact combination before
+            if city_code_key not in seen_city_codes:
+                msa_list.append({
+                    'state': state,
+                    'city': city,
+                    'code': code,
+                    'full_name': f"{state} - {city} ({code})",
+                    'city_key': city.lower()  # Add a lowercase version for easier matching
+                })
+                seen_city_codes.add(city_code_key)
         
         return msa_list
     except Exception as e:
@@ -58,11 +67,23 @@ def find_closest_msa(query, vectorizer, tfidf_matrix, msa_list, top_n=5):
     # Calculate cosine similarity
     similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
     
-    # Get indices of top matches
-    top_indices = similarities.argsort()[-top_n:][::-1]
+    # Get indices of sorted similarities (highest to lowest)
+    sorted_indices = similarities.argsort()[::-1]
     
-    # Return the top matches with their similarity scores
-    return [(msa_list[idx], similarities[idx]) for idx in top_indices]
+    # Track cities we've already added to prevent duplicates
+    seen_cities = set()
+    matches = []
+    
+    # Get top_n unique cities
+    for idx in sorted_indices:
+        city_key = msa_list[idx]['city_key']
+        
+        # Only add this city if we haven't seen it yet
+        if city_key not in seen_cities and len(matches) < top_n:
+            matches.append((msa_list[idx], similarities[idx]))
+            seen_cities.add(city_key)
+    
+    return matches
 
 # Provide option to use GitHub file or upload
 data_source = st.radio(
@@ -75,7 +96,7 @@ msa_list = []
 if data_source == "GitHub URL":
     github_url = st.text_input(
         "Enter the GitHub raw URL for your MSA file:", 
-        value="https://github.com/scott-dunphy/market_embeddings/blob/main/markets.txt",
+        value="https://raw.githubusercontent.com/username/repo/main/msa_data.txt",
         help="Make sure to use the 'raw' GitHub URL (https://raw.githubusercontent.com/...)"
     )
     
@@ -123,6 +144,17 @@ if msa_list:
             
             # Create a progress bar to visualize match confidence
             st.progress(score)
+            
+        # Add debugging option
+        if st.checkbox("Show debug info"):
+            st.write("Raw matching scores for all cities:")
+            # Calculate all similarities for debugging
+            query_vec = vectorizer.transform([query])
+            all_similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
+            
+            # Display all cities with their similarity scores
+            for idx, similarity in enumerate(all_similarities):
+                st.write(f"{msa_list[idx]['full_name']}: {similarity:.4f}")
 else:
     if data_source == "Upload file" and not uploaded_file:
         st.info("Please upload a text file containing MSA information")
@@ -149,14 +181,23 @@ def load_msa_data(file_path):
         matches = re.findall(pattern, content)
         
         msa_list = []
+        seen_city_codes = set()  # Track unique combinations to prevent duplicates
+        
         for state, city, code in matches:
             city = city.strip()
-            msa_list.append({
-                'state': state,
-                'city': city,
-                'code': code,
-                'full_name': f"{state} - {city} ({code})"
-            })
+            # Create a unique identifier for this city-code combination
+            city_code_key = f"{city.lower()}_{code}"
+            
+            # Only add if we haven't seen this exact combination before
+            if city_code_key not in seen_city_codes:
+                msa_list.append({
+                    'state': state,
+                    'city': city,
+                    'code': code,
+                    'full_name': f"{state} - {city} ({code})",
+                    'city_key': city.lower()  # Add a lowercase version for easier matching
+                })
+                seen_city_codes.add(city_code_key)
         
         return msa_list
     except Exception as e:
