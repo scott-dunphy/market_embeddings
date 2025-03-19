@@ -24,23 +24,29 @@ def load_msa_data_from_github(github_url):
         matches = re.findall(pattern, content)
         
         msa_list = []
-        seen_city_codes = set()  # Track unique combinations to prevent duplicates
+        seen_codes = set()  # Track unique MSA codes
         
-        for state, city, code in matches:
-            city = city.strip()
-            # Create a unique identifier for this city-code combination
-            city_code_key = f"{city.lower()}_{code}"
+        for state, city_area, code in matches:
+            city_area = city_area.strip()
             
-            # Only add if we haven't seen this exact combination before
-            if city_code_key not in seen_city_codes:
-                msa_list.append({
+            # Only add if we haven't seen this MSA code before
+            if code not in seen_codes:
+                # Extract individual city names from the full area name
+                # Split on common delimiters like hyphens, commas, and "and"
+                city_parts = re.split(r'[-,/&]|\band\b', city_area)
+                city_parts = [part.strip() for part in city_parts if part.strip()]
+                
+                msa_entry = {
                     'state': state,
-                    'city': city,
+                    'full_area_name': city_area,
                     'code': code,
-                    'full_name': f"{state} - {city} ({code})",
-                    'city_key': city.lower()  # Add a lowercase version for easier matching
-                })
-                seen_city_codes.add(city_code_key)
+                    'full_name': f"{state} - {city_area} ({code})",
+                    'city_parts': city_parts,
+                    'search_text': f"{state} {city_area} {' '.join(city_parts)}"
+                }
+                
+                msa_list.append(msa_entry)
+                seen_codes.add(code)
         
         return msa_list
     except Exception as e:
@@ -50,19 +56,49 @@ def load_msa_data_from_github(github_url):
 # Function to create text embeddings for MSAs
 @st.cache_resource
 def create_embeddings(msa_list):
-    # Extract city names for embedding
-    city_texts = [msa['city'] for msa in msa_list]
+    # Create a list of documents to vectorize
+    # Each document combines all text we want to match against
+    documents = [msa['search_text'] for msa in msa_list]
     
-    # Create TF-IDF vectorizer
-    vectorizer = TfidfVectorizer(ngram_range=(1, 2))
-    tfidf_matrix = vectorizer.fit_transform(city_texts)
+    # Create TF-IDF vectorizer with more features to improve matching
+    vectorizer = TfidfVectorizer(
+        ngram_range=(1, 3),  # Use 1-3 word phrases
+        min_df=1,
+        max_df=0.9,
+        sublinear_tf=True  # Apply sublinear tf scaling
+    )
+    
+    tfidf_matrix = vectorizer.fit_transform(documents)
     
     return vectorizer, tfidf_matrix
 
 # Function to find the closest matching MSA
 def find_closest_msa(query, vectorizer, tfidf_matrix, msa_list, top_n=5):
-    # Transform the query using the same vectorizer
-    query_vec = vectorizer.transform([query])
+    # Clean and expand the query
+    # Try to handle common variations like "Manhattan" for "New York"
+    expanded_query = query.strip()
+    
+    # List of common city name mappings
+    city_mappings = {
+        'manhattan': 'new york',
+        'brooklyn': 'new york',
+        'queens': 'new york',
+        'bronx': 'new york',
+        'staten island': 'new york',
+        'hollywood': 'los angeles',
+        'venice beach': 'los angeles',
+        'south beach': 'miami',
+        'the loop': 'chicago'
+    }
+    
+    # Check if the query matches any known neighborhood/borough
+    query_lower = query.lower()
+    if query_lower in city_mappings:
+        # If yes, add the major city name to the query
+        expanded_query = f"{query} {city_mappings[query_lower]}"
+    
+    # Transform the expanded query using the same vectorizer
+    query_vec = vectorizer.transform([expanded_query])
     
     # Calculate cosine similarity
     similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
@@ -70,18 +106,18 @@ def find_closest_msa(query, vectorizer, tfidf_matrix, msa_list, top_n=5):
     # Get indices of sorted similarities (highest to lowest)
     sorted_indices = similarities.argsort()[::-1]
     
-    # Track cities we've already added to prevent duplicates
-    seen_cities = set()
+    # Track codes we've already added to prevent duplicates
+    seen_codes = set()
     matches = []
     
-    # Get top_n unique cities
+    # Get top_n unique MSAs
     for idx in sorted_indices:
-        city_key = msa_list[idx]['city_key']
+        code = msa_list[idx]['code']
         
-        # Only add this city if we haven't seen it yet
-        if city_key not in seen_cities and len(matches) < top_n:
+        # Only add this MSA if we haven't seen it yet
+        if code not in seen_codes and len(matches) < top_n:
             matches.append((msa_list[idx], similarities[idx]))
-            seen_cities.add(city_key)
+            seen_codes.add(code)
     
     return matches
 
@@ -145,16 +181,25 @@ if msa_list:
             # Create a progress bar to visualize match confidence
             st.progress(score)
             
+            # Show what parts of the MSA name matched
+            with st.expander("See match details"):
+                st.write("Individual cities in this MSA:")
+                for city in msa['city_parts']:
+                    st.write(f"- {city}")
+            
         # Add debugging option
         if st.checkbox("Show debug info"):
-            st.write("Raw matching scores for all cities:")
+            st.write("Top 10 raw matching scores:")
             # Calculate all similarities for debugging
             query_vec = vectorizer.transform([query])
             all_similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
             
-            # Display all cities with their similarity scores
-            for idx, similarity in enumerate(all_similarities):
-                st.write(f"{msa_list[idx]['full_name']}: {similarity:.4f}")
+            # Get indices of top 10 matches
+            top10_indices = all_similarities.argsort()[-10:][::-1]
+            
+            # Display top 10 areas with their similarity scores
+            for idx in top10_indices:
+                st.write(f"{msa_list[idx]['full_name']}: {all_similarities[idx]:.4f}")
 else:
     if data_source == "Upload file" and not uploaded_file:
         st.info("Please upload a text file containing MSA information")
@@ -166,6 +211,7 @@ else:
     IL - Chicago (12345)
     CA - Los Angeles (23423)
     NY - New York (34535)
+    NY - NJ-New York-Jersey City-White Plains (35614)
     ```
     """)
 
@@ -181,23 +227,29 @@ def load_msa_data(file_path):
         matches = re.findall(pattern, content)
         
         msa_list = []
-        seen_city_codes = set()  # Track unique combinations to prevent duplicates
+        seen_codes = set()  # Track unique MSA codes
         
-        for state, city, code in matches:
-            city = city.strip()
-            # Create a unique identifier for this city-code combination
-            city_code_key = f"{city.lower()}_{code}"
+        for state, city_area, code in matches:
+            city_area = city_area.strip()
             
-            # Only add if we haven't seen this exact combination before
-            if city_code_key not in seen_city_codes:
-                msa_list.append({
+            # Only add if we haven't seen this MSA code before
+            if code not in seen_codes:
+                # Extract individual city names from the full area name
+                # Split on common delimiters like hyphens, commas, and "and"
+                city_parts = re.split(r'[-,/&]|\band\b', city_area)
+                city_parts = [part.strip() for part in city_parts if part.strip()]
+                
+                msa_entry = {
                     'state': state,
-                    'city': city,
+                    'full_area_name': city_area,
                     'code': code,
-                    'full_name': f"{state} - {city} ({code})",
-                    'city_key': city.lower()  # Add a lowercase version for easier matching
-                })
-                seen_city_codes.add(city_code_key)
+                    'full_name': f"{state} - {city_area} ({code})",
+                    'city_parts': city_parts,
+                    'search_text': f"{state} {city_area} {' '.join(city_parts)}"
+                }
+                
+                msa_list.append(msa_entry)
+                seen_codes.add(code)
         
         return msa_list
     except Exception as e:
