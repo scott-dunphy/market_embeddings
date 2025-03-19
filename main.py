@@ -96,7 +96,7 @@ msa_list = []
 if data_source == "GitHub URL":
     github_url = st.text_input(
         "Enter the GitHub raw URL for your MSA file:", 
-        value="https://raw.githubusercontent.com/username/repo/main/msa_data.txt",
+        value="https://github.com/scott-dunphy/market_embeddings/blob/main/markets.txt",
         help="Make sure to use the 'raw' GitHub URL (https://raw.githubusercontent.com/...)"
     )
     
